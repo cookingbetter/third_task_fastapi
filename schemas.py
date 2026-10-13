@@ -33,3 +33,11 @@ class FeatureVectorChurn(BaseModel):
 
 class DatasetRowChurn(FeatureVectorChurn):
     churn: int
+
+
+class DatasetInfo(BaseModel):
+    n_rows: int
+    n_columns: int
+    features: list[str]
+    churn_distribution: dict[int, int]
+    churn_share: dict[int, float]
