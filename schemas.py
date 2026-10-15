@@ -41,3 +41,19 @@ class DatasetInfo(BaseModel):
     features: list[str]
     churn_distribution: dict[int, int]
     churn_share: dict[int, float]
+
+
+class ClassBalance(BaseModel):
+    n_rows: int
+    churn_distribution: dict[int, int]
+    churn_share: dict[int, float]
+
+
+class SplitInfo(BaseModel):
+    test_size: float
+    random_state: int
+    stratified: bool
+    numeric_features: list[str]
+    categorical_features: list[str]
+    train: ClassBalance
+    test: ClassBalance
