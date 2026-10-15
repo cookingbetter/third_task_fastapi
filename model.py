@@ -1,3 +1,8 @@
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+import joblib
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
@@ -13,7 +18,17 @@ from preprocessing import (
     split_train_test,
 )
 
-_trained_model: Pipeline | None = None
+MODEL_PATH = Path(__file__).parent / "models" / "churn_model.joblib"
+
+
+@dataclass
+class ModelArtifact:
+    pipeline: Pipeline
+    trained_at: datetime
+    metrics: dict
+
+
+_artifact: ModelArtifact | None = None
 
 
 def build_pipeline() -> Pipeline:
@@ -53,10 +68,28 @@ def train_churn_model(df: pd.DataFrame) -> tuple[Pipeline, dict]:
     return pipeline, metrics
 
 
-def set_model(pipeline: Pipeline) -> None:
-    global _trained_model
-    _trained_model = pipeline
+def save_churn_model(artifact: ModelArtifact, path: Path = MODEL_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(artifact, path)
+
+
+def load_churn_model(path: Path = MODEL_PATH) -> ModelArtifact | None:
+    if not path.exists():
+        return None
+    try:
+        return joblib.load(path)
+    except Exception:
+        return None
+
+
+def set_artifact(artifact: ModelArtifact) -> None:
+    global _artifact
+    _artifact = artifact
+
+
+def get_artifact() -> ModelArtifact | None:
+    return _artifact
 
 
 def get_model() -> Pipeline | None:
-    return _trained_model
+    return _artifact.pipeline if _artifact else None

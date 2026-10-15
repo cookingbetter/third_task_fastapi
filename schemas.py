@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -70,3 +72,9 @@ class TrainResponse(BaseModel):
     n_train: int
     n_test: int
     metrics: TrainMetrics
+
+
+class ModelStatus(BaseModel):
+    is_trained: bool
+    trained_at: datetime | None
+    metrics: TrainMetrics | None

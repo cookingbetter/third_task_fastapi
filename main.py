@@ -1,10 +1,19 @@
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Annotated
 
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query
 
 from dataset import get_dataset
-from model import set_model, train_churn_model
+from model import (
+    ModelArtifact,
+    get_artifact,
+    load_churn_model,
+    save_churn_model,
+    set_artifact,
+    train_churn_model,
+)
 from preprocessing import (
     CATEGORICAL_FEATURES,
     NUMERIC_FEATURES,
@@ -19,12 +28,22 @@ from schemas import (
     DatasetInfo,
     DatasetRowChurn,
     FeatureVectorChurn,
+    ModelStatus,
     SplitInfo,
     TrainMetrics,
     TrainResponse,
 )
 
-app = FastAPI(title="ML Churn Service")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    artifact = load_churn_model()
+    if artifact is not None:
+        set_artifact(artifact)
+    yield
+
+
+app = FastAPI(title="ML Churn Service", lifespan=lifespan)
 
 
 def dataset_dependency() -> pd.DataFrame:
@@ -93,11 +112,32 @@ def model_train(df: Dataset):
     if df.empty:
         raise HTTPException(status_code=400, detail="dataset is empty")
     pipeline, metrics = train_churn_model(df)
-    set_model(pipeline)
+    artifact = ModelArtifact(
+        pipeline=pipeline,
+        trained_at=datetime.now(timezone.utc),
+        metrics=metrics,
+    )
+    save_churn_model(artifact)
+    set_artifact(artifact)
     return TrainResponse(
         status="trained",
         algorithm="LogisticRegression",
         n_train=metrics["n_train"],
         n_test=metrics["n_test"],
         metrics=TrainMetrics(accuracy=metrics["accuracy"], f1=metrics["f1"]),
+    )
+
+
+@app.get("/model/status", response_model=ModelStatus)
+def model_status():
+    artifact = get_artifact()
+    if artifact is None:
+        return ModelStatus(is_trained=False, trained_at=None, metrics=None)
+    return ModelStatus(
+        is_trained=True,
+        trained_at=artifact.trained_at,
+        metrics=TrainMetrics(
+            accuracy=artifact.metrics["accuracy"],
+            f1=artifact.metrics["f1"],
+        ),
     )
