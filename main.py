@@ -4,6 +4,7 @@ import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query
 
 from dataset import get_dataset
+from model import set_model, train_churn_model
 from preprocessing import (
     CATEGORICAL_FEATURES,
     NUMERIC_FEATURES,
@@ -19,6 +20,8 @@ from schemas import (
     DatasetRowChurn,
     FeatureVectorChurn,
     SplitInfo,
+    TrainMetrics,
+    TrainResponse,
 )
 
 app = FastAPI(title="ML Churn Service")
@@ -82,4 +85,19 @@ def dataset_split_info(df: Dataset):
         categorical_features=CATEGORICAL_FEATURES,
         train=build_balance(y_train),
         test=build_balance(y_test),
+    )
+
+
+@app.post("/model/train", response_model=TrainResponse)
+def model_train(df: Dataset):
+    if df.empty:
+        raise HTTPException(status_code=400, detail="dataset is empty")
+    pipeline, metrics = train_churn_model(df)
+    set_model(pipeline)
+    return TrainResponse(
+        status="trained",
+        algorithm="LogisticRegression",
+        n_train=metrics["n_train"],
+        n_test=metrics["n_test"],
+        metrics=TrainMetrics(accuracy=metrics["accuracy"], f1=metrics["f1"]),
     )

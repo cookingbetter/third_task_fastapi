@@ -57,3 +57,16 @@ class SplitInfo(BaseModel):
     categorical_features: list[str]
     train: ClassBalance
     test: ClassBalance
+
+
+class TrainMetrics(BaseModel):
+    accuracy: float
+    f1: float
+
+
+class TrainResponse(BaseModel):
+    status: str
+    algorithm: str
+    n_train: int
+    n_test: int
+    metrics: TrainMetrics
