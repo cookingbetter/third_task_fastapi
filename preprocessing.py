@@ -10,6 +10,7 @@ NUMERIC_FEATURES = [
     "autopay_enabled",
 ]
 CATEGORICAL_FEATURES = ["region", "device_type", "payment_method"]
+FEATURE_ORDER = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 TARGET = "churn"
 
 TEST_SIZE = 0.2
@@ -27,9 +28,13 @@ def handle_missing(df: pd.DataFrame) -> pd.DataFrame:
 
 def prepare_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     df = handle_missing(df)
-    X = df[NUMERIC_FEATURES + CATEGORICAL_FEATURES]
+    X = df[FEATURE_ORDER]
     y = df[TARGET]
     return X, y
+
+
+def features_to_frame(records: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame(records, columns=FEATURE_ORDER)
 
 
 def split_train_test(

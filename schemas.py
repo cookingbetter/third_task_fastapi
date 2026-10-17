@@ -100,6 +100,55 @@ class ModelStatus(BaseModel):
     metrics: TrainMetrics | None
 
 
+class FeatureSchema(BaseModel):
+    name: str
+    type: str
+    kind: str
+    allowed_values: list[str] | None
+
+
+class ModelSchemaChurn(BaseModel):
+    target: str
+    is_trained: bool
+    feature_order: list[str]
+    numeric_features: list[str]
+    categorical_features: list[str]
+    features: list[FeatureSchema]
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "target": "churn",
+                    "is_trained": True,
+                    "feature_order": ["monthly_fee", "region"],
+                    "numeric_features": ["monthly_fee"],
+                    "categorical_features": ["region"],
+                    "features": [
+                        {
+                            "name": "monthly_fee",
+                            "type": "number",
+                            "kind": "numeric",
+                            "allowed_values": None,
+                        },
+                        {
+                            "name": "region",
+                            "type": "string",
+                            "kind": "categorical",
+                            "allowed_values": [
+                                "africa",
+                                "america",
+                                "asia",
+                                "europe",
+                            ],
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+
+
 class PredictionChurn(BaseModel):
     churn: int
     probability_stay: float

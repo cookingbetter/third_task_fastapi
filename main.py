@@ -19,13 +19,17 @@ from model import (
     save_churn_model,
     set_artifact,
     train_churn_model,
+    trained_categories,
 )
 from preprocessing import (
     CATEGORICAL_FEATURES,
+    FEATURE_ORDER,
     NUMERIC_FEATURES,
     RANDOM_STATE,
+    TARGET,
     TEST_SIZE,
     class_distribution,
+    features_to_frame,
     prepare_data,
     split_train_test,
 )
@@ -33,7 +37,9 @@ from schemas import (
     ClassBalance,
     DatasetInfo,
     DatasetRowChurn,
+    FeatureSchema,
     FeatureVectorChurn,
+    ModelSchemaChurn,
     ModelStatus,
     PredictionChurn,
     PredictionResponseChurn,
@@ -42,6 +48,8 @@ from schemas import (
     TrainMetrics,
     TrainResponse,
 )
+
+JSON_TYPES = {float: "number", int: "integer", str: "string"}
 
 SINGLE_CLIENT_EXAMPLE = {
     "monthly_fee": 9.99,
@@ -189,7 +197,28 @@ def predict(
 
     ensure_finite(objects)
 
-    X = pd.DataFrame([obj.model_dump() for obj in objects])
+    names = getattr(pipeline, "feature_names_in_", None)
+    if names is None:
+        # модель обучена без имён столбцов, сверить набор признаков невозможно
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "model was trained without feature names, retrain it: "
+                f"service provides {FEATURE_ORDER}"
+            ),
+        )
+
+    expected = list(names)
+    if expected != FEATURE_ORDER:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "model was trained on different features, retrain it: "
+                f"expected {expected}, service provides {FEATURE_ORDER}"
+            ),
+        )
+
+    X = features_to_frame([obj.model_dump() for obj in objects])
     classes = pipeline.predict(X)
     proba = pipeline.predict_proba(X)
     stay_index = list(pipeline.classes_).index(0)
@@ -273,6 +302,29 @@ def model_train(
         n_train=metrics["n_train"],
         n_test=metrics["n_test"],
         metrics=TrainMetrics(accuracy=metrics["accuracy"], f1=metrics["f1"]),
+    )
+
+
+@app.get("/model/schema", response_model=ModelSchemaChurn)
+def model_schema():
+    artifact = get_artifact()
+    categories = trained_categories(artifact.pipeline) if artifact else {}
+    features = [
+        FeatureSchema(
+            name=name,
+            type=JSON_TYPES[FeatureVectorChurn.model_fields[name].annotation],
+            kind="numeric" if name in NUMERIC_FEATURES else "categorical",
+            allowed_values=categories.get(name),
+        )
+        for name in FEATURE_ORDER
+    ]
+    return ModelSchemaChurn(
+        target=TARGET,
+        is_trained=artifact is not None,
+        feature_order=FEATURE_ORDER,
+        numeric_features=NUMERIC_FEATURES,
+        categorical_features=CATEGORICAL_FEATURES,
+        features=features,
     )
 
 

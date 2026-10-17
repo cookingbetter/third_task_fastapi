@@ -135,6 +135,22 @@ def train_churn_model(
     return pipeline, metrics, applied
 
 
+def trained_categories(pipeline: Pipeline) -> dict[str, list[str]]:
+    try:
+        encoder = pipeline.named_steps["preprocessor"].named_transformers_[
+            "categorical"
+        ]
+        # имена берём у энкодера: он мог быть обучен на другом наборе признаков
+        names = encoder.feature_names_in_
+        return {
+            str(name): [str(value) for value in values]
+            for name, values in zip(names, encoder.categories_)
+        }
+    except (AttributeError, KeyError):
+        # артефакт мог быть сохранён другой версией кода
+        return {}
+
+
 def save_churn_model(artifact: ModelArtifact, path: Path = MODEL_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(artifact, path)
