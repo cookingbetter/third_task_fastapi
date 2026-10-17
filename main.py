@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from dataset import get_dataset
 from model import (
+    InvalidTrainingConfig,
     ModelArtifact,
     get_artifact,
     get_model,
@@ -37,6 +38,7 @@ from schemas import (
     PredictionChurn,
     PredictionResponseChurn,
     SplitInfo,
+    TrainingConfigChurn,
     TrainMetrics,
     TrainResponse,
 )
@@ -75,6 +77,22 @@ PREDICT_EXAMPLES = {
         "summary": "Список клиентов",
         "description": "Лояльный клиент и клиент из группы риска в одном запросе.",
         "value": [SINGLE_CLIENT_EXAMPLE, RISKY_CLIENT_EXAMPLE],
+    },
+}
+
+TRAIN_EXAMPLES = {
+    "logreg": {
+        "summary": "Логистическая регрессия",
+        "description": "Поведение по умолчанию, тело запроса можно не передавать вовсе.",
+        "value": {"model_type": "logreg", "hyperparameters": {}},
+    },
+    "random_forest": {
+        "summary": "Случайный лес",
+        "description": "Другой тип модели со своими гиперпараметрами.",
+        "value": {
+            "model_type": "random_forest",
+            "hyperparameters": {"n_estimators": 200, "max_depth": 8},
+        },
     },
 }
 
@@ -221,20 +239,37 @@ def dataset_split_info(df: Dataset):
 
 
 @app.post("/model/train", response_model=TrainResponse)
-def model_train(df: Dataset):
+def model_train(
+    df: Dataset,
+    config: TrainingConfigChurn | None = Body(
+        default=None, openapi_examples=TRAIN_EXAMPLES
+    ),
+):
     if df.empty:
         raise HTTPException(status_code=400, detail="dataset is empty")
-    pipeline, metrics = train_churn_model(df)
+
+    config = config or TrainingConfigChurn()
+    try:
+        pipeline, metrics, applied = train_churn_model(
+            df, config.model_type, config.hyperparameters
+        )
+    except InvalidTrainingConfig as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
     artifact = ModelArtifact(
         pipeline=pipeline,
         trained_at=datetime.now(timezone.utc),
         metrics=metrics,
+        model_type=config.model_type,
+        hyperparameters=applied,
     )
     save_churn_model(artifact)
     set_artifact(artifact)
     return TrainResponse(
         status="trained",
-        algorithm="LogisticRegression",
+        algorithm=type(pipeline.named_steps["classifier"]).__name__,
+        model_type=config.model_type,
+        hyperparameters=applied,
         n_train=metrics["n_train"],
         n_test=metrics["n_test"],
         metrics=TrainMetrics(accuracy=metrics["accuracy"], f1=metrics["f1"]),
@@ -245,10 +280,19 @@ def model_train(df: Dataset):
 def model_status():
     artifact = get_artifact()
     if artifact is None:
-        return ModelStatus(is_trained=False, trained_at=None, metrics=None)
+        return ModelStatus(
+            is_trained=False,
+            trained_at=None,
+            model_type=None,
+            hyperparameters=None,
+            metrics=None,
+        )
     return ModelStatus(
         is_trained=True,
         trained_at=artifact.trained_at,
+        # артефакты, сохранённые до дня 8, не содержат этих полей
+        model_type=getattr(artifact, "model_type", None),
+        hyperparameters=getattr(artifact, "hyperparameters", None),
         metrics=TrainMetrics(
             accuracy=artifact.metrics["accuracy"],
             f1=artifact.metrics["f1"],

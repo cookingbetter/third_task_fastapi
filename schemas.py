@@ -61,6 +61,22 @@ class SplitInfo(BaseModel):
     test: ClassBalance
 
 
+class TrainingConfigChurn(BaseModel):
+    model_type: str = "logreg"
+    hyperparameters: dict = {}
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "model_type": "random_forest",
+                    "hyperparameters": {"n_estimators": 200, "max_depth": 8},
+                }
+            ]
+        }
+    }
+
+
 class TrainMetrics(BaseModel):
     accuracy: float
     f1: float
@@ -69,6 +85,8 @@ class TrainMetrics(BaseModel):
 class TrainResponse(BaseModel):
     status: str
     algorithm: str
+    model_type: str
+    hyperparameters: dict
     n_train: int
     n_test: int
     metrics: TrainMetrics
@@ -77,6 +95,8 @@ class TrainResponse(BaseModel):
 class ModelStatus(BaseModel):
     is_trained: bool
     trained_at: datetime | None
+    model_type: str | None
+    hyperparameters: dict | None
     metrics: TrainMetrics | None
 
 
