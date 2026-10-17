@@ -1,14 +1,19 @@
+import math
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated
 
 import pandas as pd
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from dataset import get_dataset
 from model import (
     ModelArtifact,
     get_artifact,
+    get_model,
     load_churn_model,
     save_churn_model,
     set_artifact,
@@ -29,10 +34,49 @@ from schemas import (
     DatasetRowChurn,
     FeatureVectorChurn,
     ModelStatus,
+    PredictionChurn,
+    PredictionResponseChurn,
     SplitInfo,
     TrainMetrics,
     TrainResponse,
 )
+
+SINGLE_CLIENT_EXAMPLE = {
+    "monthly_fee": 9.99,
+    "usage_hours": 27.92,
+    "support_requests": 1,
+    "account_age_months": 14,
+    "failed_payments": 1,
+    "region": "america",
+    "device_type": "desktop",
+    "payment_method": "card",
+    "autopay_enabled": 1,
+}
+
+RISKY_CLIENT_EXAMPLE = {
+    "monthly_fee": 49.99,
+    "usage_hours": 1.5,
+    "support_requests": 4,
+    "account_age_months": 1,
+    "failed_payments": 2,
+    "region": "africa",
+    "device_type": "mobile",
+    "payment_method": "crypto",
+    "autopay_enabled": 0,
+}
+
+PREDICT_EXAMPLES = {
+    "single": {
+        "summary": "Один клиент",
+        "description": "Объект передаётся как есть, ответ всё равно содержит список из одного прогноза.",
+        "value": SINGLE_CLIENT_EXAMPLE,
+    },
+    "batch": {
+        "summary": "Список клиентов",
+        "description": "Лояльный клиент и клиент из группы риска в одном запросе.",
+        "value": [SINGLE_CLIENT_EXAMPLE, RISKY_CLIENT_EXAMPLE],
+    },
+}
 
 
 @asynccontextmanager
@@ -44,6 +88,25 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ML Churn Service", lifespan=lifespan)
+
+
+def json_safe(value):
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    # отклонённое значение попадает в ответ, а nan и inf не сериализуются в json
+    return JSONResponse(
+        status_code=422,
+        content={"detail": json_safe(jsonable_encoder(exc.errors()))},
+    )
 
 
 def dataset_dependency() -> pd.DataFrame:
@@ -65,14 +128,64 @@ def build_balance(y: pd.Series) -> ClassBalance:
     )
 
 
+def ensure_finite(objects: list[FeatureVectorChurn]) -> None:
+    for position, obj in enumerate(objects):
+        for field in NUMERIC_FEATURES:
+            value = getattr(obj, field)
+            try:
+                is_finite = math.isfinite(value)
+            except OverflowError:
+                # целые в python неограничены, а признаки уходят в модель как float
+                is_finite = False
+            if not is_finite:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"object at position {position}: {field} "
+                        "must be a finite number"
+                    ),
+                )
+
+
 @app.get("/")
 def read_root():
     return {"message": "ml churn service is running"}
 
 
-@app.post("/predict", response_model=FeatureVectorChurn)
-def predict(features: FeatureVectorChurn):
-    return features
+@app.post("/predict", response_model=PredictionResponseChurn)
+def predict(
+    payload: FeatureVectorChurn | list[FeatureVectorChurn] = Body(
+        ..., openapi_examples=PREDICT_EXAMPLES
+    ),
+):
+    pipeline = get_model()
+    if pipeline is None:
+        raise HTTPException(
+            status_code=409,
+            detail="model is not trained yet, call POST /model/train first",
+        )
+
+    objects = payload if isinstance(payload, list) else [payload]
+    if not objects:
+        raise HTTPException(status_code=400, detail="no objects to predict")
+
+    ensure_finite(objects)
+
+    X = pd.DataFrame([obj.model_dump() for obj in objects])
+    classes = pipeline.predict(X)
+    proba = pipeline.predict_proba(X)
+    stay_index = list(pipeline.classes_).index(0)
+    churn_index = list(pipeline.classes_).index(1)
+
+    predictions = [
+        PredictionChurn(
+            churn=int(cls),
+            probability_stay=round(float(row[stay_index]), 4),
+            probability_churn=round(float(row[churn_index]), 4),
+        )
+        for cls, row in zip(classes, proba)
+    ]
+    return PredictionResponseChurn(n_objects=len(predictions), predictions=predictions)
 
 
 @app.get("/dataset/preview", response_model=list[DatasetRowChurn])

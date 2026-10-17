@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,8 @@ from preprocessing import (
     prepare_data,
     split_train_test,
 )
+
+logger = logging.getLogger(__name__)
 
 MODEL_PATH = Path(__file__).parent / "models" / "churn_model.joblib"
 
@@ -79,6 +82,11 @@ def load_churn_model(path: Path = MODEL_PATH) -> ModelArtifact | None:
     try:
         return joblib.load(path)
     except Exception:
+        logger.warning(
+            "could not load model from %s, treating as not trained",
+            path,
+            exc_info=True,
+        )
         return None
 
 

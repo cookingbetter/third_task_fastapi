@@ -78,3 +78,36 @@ class ModelStatus(BaseModel):
     is_trained: bool
     trained_at: datetime | None
     metrics: TrainMetrics | None
+
+
+class PredictionChurn(BaseModel):
+    churn: int
+    probability_stay: float
+    probability_churn: float
+
+
+class PredictionResponseChurn(BaseModel):
+    n_objects: int
+    predictions: list[PredictionChurn]
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "n_objects": 2,
+                    "predictions": [
+                        {
+                            "churn": 0,
+                            "probability_stay": 0.8416,
+                            "probability_churn": 0.1584,
+                        },
+                        {
+                            "churn": 1,
+                            "probability_stay": 0.4213,
+                            "probability_churn": 0.5787,
+                        },
+                    ],
+                }
+            ]
+        }
+    }
