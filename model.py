@@ -10,7 +10,7 @@ from sklearn.base import ClassifierMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
@@ -126,9 +126,12 @@ def train_churn_model(
             f"could not train '{model_type}' with given hyperparameters: {error}"
         )
     y_pred = pipeline.predict(X_test)
+    churn_index = list(pipeline.classes_).index(1)
+    proba = pipeline.predict_proba(X_test)[:, churn_index]
     metrics = {
         "accuracy": round(accuracy_score(y_test, y_pred), 4),
         "f1": round(f1_score(y_test, y_pred), 4),
+        "roc_auc": round(roc_auc_score(y_test, proba), 4),
         "n_train": len(X_train),
         "n_test": len(X_test),
     }

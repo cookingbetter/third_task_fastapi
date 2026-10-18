@@ -85,6 +85,8 @@ class TrainingConfigChurn(BaseModel):
 class TrainMetrics(BaseModel):
     accuracy: float
     f1: float
+    # артефакты и записи истории, созданные до дня 11, не содержат roc_auc
+    roc_auc: float | None = None
 
 
 class TrainResponse(BaseModel):
@@ -146,6 +148,82 @@ class ModelSchemaChurn(BaseModel):
                                 "asia",
                                 "europe",
                             ],
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+
+
+class TrainingRecord(BaseModel):
+    trained_at: datetime
+    model_type: str
+    hyperparameters: dict
+    metrics: TrainMetrics
+    n_train: int
+    n_test: int
+
+
+class MetricsHistoryResponse(BaseModel):
+    is_trained: bool
+    latest: TrainingRecord | None
+    n_records: int
+    records: list[TrainingRecord]
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "is_trained": True,
+                    "latest": {
+                        "trained_at": "2026-10-18T14:24:54.317330Z",
+                        "model_type": "random_forest",
+                        "hyperparameters": {
+                            "random_state": 42,
+                            "n_estimators": 200,
+                            "max_depth": 8,
+                        },
+                        "metrics": {
+                            "accuracy": 0.795,
+                            "f1": 0.1458,
+                            "roc_auc": 0.6421,
+                        },
+                        "n_train": 1600,
+                        "n_test": 400,
+                    },
+                    "n_records": 2,
+                    "records": [
+                        {
+                            "trained_at": "2026-10-18T14:24:54.317330Z",
+                            "model_type": "random_forest",
+                            "hyperparameters": {
+                                "random_state": 42,
+                                "n_estimators": 200,
+                                "max_depth": 8,
+                            },
+                            "metrics": {
+                                "accuracy": 0.795,
+                                "f1": 0.1458,
+                                "roc_auc": 0.6421,
+                            },
+                            "n_train": 1600,
+                            "n_test": 400,
+                        },
+                        {
+                            "trained_at": "2026-10-18T14:20:11.004512Z",
+                            "model_type": "logreg",
+                            "hyperparameters": {
+                                "max_iter": 1000,
+                                "random_state": 42,
+                            },
+                            "metrics": {
+                                "accuracy": 0.7875,
+                                "f1": 0.0449,
+                                "roc_auc": 0.6189,
+                            },
+                            "n_train": 1600,
+                            "n_test": 400,
                         },
                     ],
                 }

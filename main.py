@@ -9,6 +9,7 @@ from fastapi import Body, Depends, FastAPI, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from starlette.exceptions import HTTPException
 
 from dataset import get_dataset
@@ -30,7 +31,9 @@ from errors import (
     ServiceError,
     error_payload,
 )
+from history import HISTORY_LIMIT, append_record, load_history
 from model import (
+    MODEL_TYPES,
     InvalidTrainingConfig,
     ModelArtifact,
     get_artifact,
@@ -60,12 +63,14 @@ from schemas import (
     ErrorResponse,
     FeatureSchema,
     FeatureVectorChurn,
+    MetricsHistoryResponse,
     ModelSchemaChurn,
     ModelStatus,
     PredictionChurn,
     PredictionResponseChurn,
     SplitInfo,
     TrainingConfigChurn,
+    TrainingRecord,
     TrainMetrics,
     TrainResponse,
 )
@@ -195,6 +200,32 @@ PREVIEW_ERROR_RESPONSE = error_responses(
             },
         ),
         "dataset_load_failed": DATASET_LOAD_EXAMPLE,
+    },
+)
+
+METRICS_ERROR_RESPONSE = error_responses(
+    "Неверный фильтр или параметр запроса",
+    {
+        "unknown_model_type": error_example(
+            "Неизвестный тип модели в фильтре",
+            VALIDATION_ERROR,
+            "unknown model_type 'xgboost'",
+            {"available": ["logreg", "random_forest"]},
+        ),
+        "validation_error": error_example(
+            "Параметр limit вне допустимого диапазона",
+            VALIDATION_ERROR,
+            "request does not match the expected schema",
+            {
+                "errors": [
+                    {
+                        "type": "greater_than_equal",
+                        "loc": ["query", "limit"],
+                        "msg": "Input should be greater than or equal to 1",
+                    }
+                ]
+            },
+        ),
     },
 )
 
@@ -409,6 +440,17 @@ def build_balance(y: pd.Series) -> ClassBalance:
         churn_distribution=counts,
         churn_share={k: round(v / len(y), 4) for k, v in counts.items()},
     )
+
+
+def valid_records(raw: list) -> list[TrainingRecord]:
+    records = []
+    for position, item in enumerate(raw):
+        try:
+            records.append(TrainingRecord(**item))
+        except (TypeError, ValidationError):
+            # файл истории могли поправить руками, одна запись не повод падать
+            logger.warning("skipping malformed history record at %s", position)
+    return records
 
 
 def ensure_finite(objects: list[FeatureVectorChurn]) -> None:
@@ -627,6 +669,24 @@ def model_train(
     )
     save_churn_model(artifact)
     set_artifact(artifact)
+
+    try:
+        append_record(
+            {
+                "trained_at": artifact.trained_at.isoformat(),
+                "model_type": config.model_type,
+                "hyperparameters": applied,
+                "metrics": {
+                    key: metrics[key] for key in ("accuracy", "f1", "roc_auc")
+                },
+                "n_train": metrics["n_train"],
+                "n_test": metrics["n_test"],
+            }
+        )
+    except (OSError, TypeError, ValueError):
+        # обучение уже прошло, история вторична и не должна его отменять
+        logger.warning("could not append training history", exc_info=True)
+
     return TrainResponse(
         status="trained",
         algorithm=type(pipeline.named_steps["classifier"]).__name__,
@@ -634,7 +694,41 @@ def model_train(
         hyperparameters=applied,
         n_train=metrics["n_train"],
         n_test=metrics["n_test"],
-        metrics=TrainMetrics(accuracy=metrics["accuracy"], f1=metrics["f1"]),
+        metrics=TrainMetrics(
+            accuracy=metrics["accuracy"],
+            f1=metrics["f1"],
+            roc_auc=metrics["roc_auc"],
+        ),
+    )
+
+
+@app.get(
+    "/model/metrics",
+    response_model=MetricsHistoryResponse,
+    responses={422: METRICS_ERROR_RESPONSE},
+)
+def model_metrics(
+    limit: int = Query(5, ge=1, le=HISTORY_LIMIT),
+    model_type: str | None = Query(default=None),
+):
+    if model_type is not None and model_type not in MODEL_TYPES:
+        raise ServiceError(
+            422,
+            VALIDATION_ERROR,
+            f"unknown model_type '{model_type}'",
+            {"available": sorted(MODEL_TYPES)},
+        )
+
+    records = [
+        record
+        for record in valid_records(load_history())
+        if model_type is None or record.model_type == model_type
+    ]
+    return MetricsHistoryResponse(
+        is_trained=get_artifact() is not None,
+        latest=records[-1] if records else None,
+        n_records=len(records),
+        records=list(reversed(records[-limit:])),
     )
 
 
@@ -681,5 +775,7 @@ def model_status():
         metrics=TrainMetrics(
             accuracy=artifact.metrics["accuracy"],
             f1=artifact.metrics["f1"],
+            # артефакты, сохранённые до дня 11, не содержат roc_auc
+            roc_auc=artifact.metrics.get("roc_auc"),
         ),
     )
