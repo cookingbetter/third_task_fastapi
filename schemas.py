@@ -15,6 +15,8 @@ class FeatureVectorChurn(BaseModel):
     autopay_enabled: int
 
     model_config = {
+        # лишний признак — ошибка: модель всё равно не умеет его учитывать
+        "extra": "forbid",
         "json_schema_extra": {
             "examples": [
                 {
@@ -35,6 +37,9 @@ class FeatureVectorChurn(BaseModel):
 
 class DatasetRowChurn(FeatureVectorChurn):
     churn: int
+
+    # запрет лишних полей нужен запросам, а в файле датасета лишний столбец допустим
+    model_config = {"extra": "ignore"}
 
 
 class DatasetInfo(BaseModel):
@@ -143,6 +148,24 @@ class ModelSchemaChurn(BaseModel):
                             ],
                         },
                     ],
+                }
+            ]
+        }
+    }
+
+
+class ErrorResponse(BaseModel):
+    code: str
+    message: str
+    details: dict
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "code": "model_not_trained",
+                    "message": "model is not trained yet, call POST /model/train first",
+                    "details": {},
                 }
             ]
         }

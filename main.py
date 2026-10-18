@@ -1,15 +1,35 @@
+import logging
 import math
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated
 
 import pandas as pd
-from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Body, Depends, FastAPI, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException
 
 from dataset import get_dataset
+from errors import (
+    DATA_PREPARATION_FAILED,
+    DATASET_NOT_FOUND,
+    EMPTY_DATASET,
+    EMPTY_PAYLOAD,
+    FEATURE_MISMATCH,
+    INCOMPATIBLE_MODEL,
+    INTERNAL_ERROR,
+    INVALID_TARGET,
+    INVALID_TRAINING_CONFIG,
+    MODEL_NOT_TRAINED,
+    NON_FINITE_VALUE,
+    PREDICTION_FAILED,
+    STATUS_CODES,
+    VALIDATION_ERROR,
+    ServiceError,
+    error_payload,
+)
 from model import (
     InvalidTrainingConfig,
     ModelArtifact,
@@ -37,6 +57,7 @@ from schemas import (
     ClassBalance,
     DatasetInfo,
     DatasetRowChurn,
+    ErrorResponse,
     FeatureSchema,
     FeatureVectorChurn,
     ModelSchemaChurn,
@@ -48,6 +69,8 @@ from schemas import (
     TrainMetrics,
     TrainResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 JSON_TYPES = {float: "number", int: "integer", str: "string"}
 
@@ -105,6 +128,179 @@ TRAIN_EXAMPLES = {
 }
 
 
+def error_example(
+    summary: str, code: str, message: str, details: dict | None = None
+) -> dict:
+    return {
+        "summary": summary,
+        "value": {"code": code, "message": message, "details": details or {}},
+    }
+
+
+def error_responses(description: str, examples: dict) -> dict:
+    return {
+        "model": ErrorResponse,
+        "description": description,
+        "content": {"application/json": {"examples": examples}},
+    }
+
+
+DATASET_NOT_FOUND_RESPONSE = error_responses(
+    "Файл датасета не найден",
+    {
+        "dataset_not_found": error_example(
+            "Нет файла датасета", DATASET_NOT_FOUND, "dataset file not found"
+        )
+    },
+)
+
+EMPTY_DATASET_RESPONSE = error_responses(
+    "Датасет пуст",
+    {"empty_dataset": error_example("Пустой датасет", EMPTY_DATASET, "dataset is empty")},
+)
+
+DATASET_LOAD_EXAMPLE = error_example(
+    "Файл датасета не читается",
+    DATA_PREPARATION_FAILED,
+    "could not load dataset: 1 validation error for DatasetRowChurn",
+)
+
+SPLIT_ERROR_RESPONSE = error_responses(
+    "Датасет не удалось подготовить или разбить",
+    {
+        "dataset_load_failed": DATASET_LOAD_EXAMPLE,
+        "data_preparation_failed": error_example(
+            "Класс слишком мал для стратификации",
+            DATA_PREPARATION_FAILED,
+            "could not prepare dataset: The least populated class in y has only 1 member",
+        ),
+    },
+)
+
+PREVIEW_ERROR_RESPONSE = error_responses(
+    "Неверный параметр запроса или нечитаемый датасет",
+    {
+        "validation_error": error_example(
+            "Параметр n вне допустимого диапазона",
+            VALIDATION_ERROR,
+            "request does not match the expected schema",
+            {
+                "errors": [
+                    {
+                        "type": "less_than_equal",
+                        "loc": ["query", "n"],
+                        "msg": "Input should be less than or equal to 100",
+                    }
+                ]
+            },
+        ),
+        "dataset_load_failed": DATASET_LOAD_EXAMPLE,
+    },
+)
+
+PREDICT_ERROR_RESPONSES = {
+    400: error_responses(
+        "Передан пустой список объектов",
+        {
+            "empty_payload": error_example(
+                "Пустой список", EMPTY_PAYLOAD, "no objects to predict"
+            )
+        },
+    ),
+    409: error_responses(
+        "Модель не обучена или обучена на другом наборе признаков",
+        {
+            "model_not_trained": error_example(
+                "Модель не обучена",
+                MODEL_NOT_TRAINED,
+                "model is not trained yet, call POST /model/train first",
+            ),
+            "feature_mismatch": error_example(
+                "Другой набор признаков",
+                FEATURE_MISMATCH,
+                "model was trained on different features, retrain it",
+                {
+                    "model_expects": ["monthly_fee", "usage_hours", "region"],
+                    "service_provides": FEATURE_ORDER,
+                },
+            ),
+            "incompatible_model": error_example(
+                "Модель предсказывает другие классы",
+                INCOMPATIBLE_MODEL,
+                "model predicts unexpected classes, retrain it",
+                {"model_classes": [1, 2], "service_expects": [0, 1]},
+            ),
+        },
+    ),
+    422: error_responses(
+        "Неверная структура запроса, типы значений или нечисловые признаки",
+        {
+            "validation_error": error_example(
+                "Лишний или пропущенный признак",
+                VALIDATION_ERROR,
+                "request does not match the expected schema",
+                {
+                    "errors": [
+                        {
+                            "type": "extra_forbidden",
+                            "loc": ["body", "extra_feature"],
+                            "msg": "Extra inputs are not permitted",
+                        }
+                    ]
+                },
+            ),
+            "non_finite_value": error_example(
+                "NaN или бесконечность в признаке",
+                NON_FINITE_VALUE,
+                "monthly_fee must be a finite number",
+                {"position": 0, "field": "monthly_fee"},
+            ),
+            "prediction_failed": error_example(
+                "Модель не смогла обработать признаки",
+                PREDICTION_FAILED,
+                "model could not process the request: X has 9 features, "
+                "but ColumnTransformer is expecting 3 features as input.",
+            ),
+        },
+    ),
+}
+
+TRAIN_ERROR_RESPONSES = {
+    400: error_responses(
+        "Датасет пуст",
+        {"empty_dataset": error_example("Пустой датасет", EMPTY_DATASET, "dataset is empty")},
+    ),
+    404: DATASET_NOT_FOUND_RESPONSE,
+    422: error_responses(
+        "Неверная конфигурация обучения или непригодные данные",
+        {
+            "invalid_training_config": error_example(
+                "Неизвестный тип модели",
+                INVALID_TRAINING_CONFIG,
+                "unknown model_type 'xgboost', available: logreg, random_forest",
+            ),
+            "unknown_hyperparameters": error_example(
+                "Неизвестный гиперпараметр",
+                INVALID_TRAINING_CONFIG,
+                "unknown hyperparameters for 'logreg': depth; allowed: C, class_weight, dual",
+            ),
+            "invalid_target": error_example(
+                "Метки целевой переменной не 0 и 1",
+                INVALID_TARGET,
+                f"target '{TARGET}' must contain exactly labels 0 and 1",
+                {"found_labels": [1, 2]},
+            ),
+            "data_preparation_failed": error_example(
+                "Сбой подготовки данных",
+                DATA_PREPARATION_FAILED,
+                "could not prepare dataset for training: "
+                "The least populated class in y has only 1 member",
+            ),
+        },
+    ),
+}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     artifact = load_churn_model()
@@ -126,12 +322,66 @@ def json_safe(value):
     return value
 
 
-@app.exception_handler(RequestValidationError)
-async def validation_error_handler(request: Request, exc: RequestValidationError):
-    # отклонённое значение попадает в ответ, а nan и inf не сериализуются в json
+@app.exception_handler(ServiceError)
+async def service_error_handler(request: Request, exc: ServiceError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_payload(exc.code, exc.message, exc.details),
+    )
+
+
+@app.exception_handler(InvalidTrainingConfig)
+async def training_config_error_handler(request: Request, exc: InvalidTrainingConfig):
     return JSONResponse(
         status_code=422,
-        content={"detail": json_safe(jsonable_encoder(exc.errors()))},
+        content=error_payload(INVALID_TRAINING_CONFIG, str(exc)),
+    )
+
+
+def compact_errors(errors) -> list[dict]:
+    # присланное значение не возвращаем: на большом батче оно раздувает ответ
+    return [
+        {
+            "type": error.get("type"),
+            "loc": list(error.get("loc", ())),
+            "msg": error.get("msg"),
+        }
+        for error in errors
+    ]
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content=error_payload(
+            VALIDATION_ERROR,
+            "request does not match the expected schema",
+            {"errors": json_safe(jsonable_encoder(compact_errors(exc.errors())))},
+        ),
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_error_handler(request: Request, exc: HTTPException):
+    # сюда попадает то, что поднимает сам fastapi: неизвестный путь, чужой метод
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_payload(
+            STATUS_CODES.get(exc.status_code, "http_error"), str(exc.detail)
+        ),
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception):
+    logger.exception(
+        "unhandled error while processing %s %s", request.method, request.url.path
+    )
+    return JSONResponse(
+        status_code=500,
+        content=error_payload(INTERNAL_ERROR, "internal server error"),
     )
 
 
@@ -139,7 +389,14 @@ def dataset_dependency() -> pd.DataFrame:
     try:
         return get_dataset()
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="dataset file not found")
+        raise ServiceError(404, DATASET_NOT_FOUND, "dataset file not found")
+    except (KeyError, ValueError) as error:
+        # в файле не те столбцы или значения, которых не ждёт DatasetRowChurn
+        raise ServiceError(
+            422,
+            DATA_PREPARATION_FAILED,
+            f"could not load dataset: {(str(error).splitlines() or ['unknown error'])[0]}",
+        )
 
 
 Dataset = Annotated[pd.DataFrame, Depends(dataset_dependency)]
@@ -164,12 +421,11 @@ def ensure_finite(objects: list[FeatureVectorChurn]) -> None:
                 # целые в python неограничены, а признаки уходят в модель как float
                 is_finite = False
             if not is_finite:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"object at position {position}: {field} "
-                        "must be a finite number"
-                    ),
+                raise ServiceError(
+                    422,
+                    NON_FINITE_VALUE,
+                    f"{field} must be a finite number",
+                    {"position": position, "field": field},
                 )
 
 
@@ -178,7 +434,11 @@ def read_root():
     return {"message": "ml churn service is running"}
 
 
-@app.post("/predict", response_model=PredictionResponseChurn)
+@app.post(
+    "/predict",
+    response_model=PredictionResponseChurn,
+    responses=PREDICT_ERROR_RESPONSES,
+)
 def predict(
     payload: FeatureVectorChurn | list[FeatureVectorChurn] = Body(
         ..., openapi_examples=PREDICT_EXAMPLES
@@ -186,43 +446,60 @@ def predict(
 ):
     pipeline = get_model()
     if pipeline is None:
-        raise HTTPException(
-            status_code=409,
-            detail="model is not trained yet, call POST /model/train first",
+        raise ServiceError(
+            409,
+            MODEL_NOT_TRAINED,
+            "model is not trained yet, call POST /model/train first",
         )
 
     objects = payload if isinstance(payload, list) else [payload]
     if not objects:
-        raise HTTPException(status_code=400, detail="no objects to predict")
+        raise ServiceError(400, EMPTY_PAYLOAD, "no objects to predict")
 
     ensure_finite(objects)
 
     names = getattr(pipeline, "feature_names_in_", None)
     if names is None:
         # модель обучена без имён столбцов, сверить набор признаков невозможно
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "model was trained without feature names, retrain it: "
-                f"service provides {FEATURE_ORDER}"
-            ),
+        raise ServiceError(
+            409,
+            FEATURE_MISMATCH,
+            "model was trained without feature names, retrain it",
+            {"service_provides": FEATURE_ORDER},
         )
 
     expected = list(names)
     if expected != FEATURE_ORDER:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "model was trained on different features, retrain it: "
-                f"expected {expected}, service provides {FEATURE_ORDER}"
-            ),
+        raise ServiceError(
+            409,
+            FEATURE_MISMATCH,
+            "model was trained on different features, retrain it",
+            {"model_expects": expected, "service_provides": FEATURE_ORDER},
+        )
+
+    # numpy-метки не сериализуются в json, поэтому приводим их к int сразу
+    model_classes = [int(value) for value in pipeline.classes_]
+    if sorted(model_classes) != [0, 1]:
+        raise ServiceError(
+            409,
+            INCOMPATIBLE_MODEL,
+            "model predicts unexpected classes, retrain it",
+            {"model_classes": model_classes, "service_expects": [0, 1]},
         )
 
     X = features_to_frame([obj.model_dump() for obj in objects])
-    classes = pipeline.predict(X)
-    proba = pipeline.predict_proba(X)
-    stay_index = list(pipeline.classes_).index(0)
-    churn_index = list(pipeline.classes_).index(1)
+    try:
+        classes = pipeline.predict(X)
+        proba = pipeline.predict_proba(X)
+    except (KeyError, ValueError) as error:
+        raise ServiceError(
+            422,
+            PREDICTION_FAILED,
+            f"model could not process the request: {error}",
+        )
+
+    stay_index = model_classes.index(0)
+    churn_index = model_classes.index(1)
 
     predictions = [
         PredictionChurn(
@@ -235,13 +512,33 @@ def predict(
     return PredictionResponseChurn(n_objects=len(predictions), predictions=predictions)
 
 
-@app.get("/dataset/preview", response_model=list[DatasetRowChurn])
+@app.get(
+    "/dataset/preview",
+    response_model=list[DatasetRowChurn],
+    responses={
+        404: DATASET_NOT_FOUND_RESPONSE,
+        422: PREVIEW_ERROR_RESPONSE,
+    },
+)
 def dataset_preview(df: Dataset, n: int = Query(5, ge=1, le=100)):
     return df.head(n).to_dict(orient="records")
 
 
-@app.get("/dataset/info", response_model=DatasetInfo)
+@app.get(
+    "/dataset/info",
+    response_model=DatasetInfo,
+    responses={
+        400: EMPTY_DATASET_RESPONSE,
+        404: DATASET_NOT_FOUND_RESPONSE,
+        422: error_responses(
+            "Файл датасета не читается", {"dataset_load_failed": DATASET_LOAD_EXAMPLE}
+        ),
+    },
+)
 def dataset_info(df: Dataset):
+    if df.empty:
+        raise ServiceError(400, EMPTY_DATASET, "dataset is empty")
+
     balance = build_balance(df["churn"])
     return DatasetInfo(
         n_rows=len(df),
@@ -252,10 +549,27 @@ def dataset_info(df: Dataset):
     )
 
 
-@app.get("/dataset/split-info", response_model=SplitInfo)
+@app.get(
+    "/dataset/split-info",
+    response_model=SplitInfo,
+    responses={
+        400: EMPTY_DATASET_RESPONSE,
+        404: DATASET_NOT_FOUND_RESPONSE,
+        422: SPLIT_ERROR_RESPONSE,
+    },
+)
 def dataset_split_info(df: Dataset):
-    X, y = prepare_data(df)
-    _, _, y_train, y_test = split_train_test(X, y)
+    if df.empty:
+        raise ServiceError(400, EMPTY_DATASET, "dataset is empty")
+
+    try:
+        X, y = prepare_data(df)
+        _, _, y_train, y_test = split_train_test(X, y)
+    except (KeyError, ValueError) as error:
+        raise ServiceError(
+            422, DATA_PREPARATION_FAILED, f"could not prepare dataset: {error}"
+        )
+
     return SplitInfo(
         test_size=TEST_SIZE,
         random_state=RANDOM_STATE,
@@ -267,7 +581,9 @@ def dataset_split_info(df: Dataset):
     )
 
 
-@app.post("/model/train", response_model=TrainResponse)
+@app.post(
+    "/model/train", response_model=TrainResponse, responses=TRAIN_ERROR_RESPONSES
+)
 def model_train(
     df: Dataset,
     config: TrainingConfigChurn | None = Body(
@@ -275,15 +591,32 @@ def model_train(
     ),
 ):
     if df.empty:
-        raise HTTPException(status_code=400, detail="dataset is empty")
+        raise ServiceError(400, EMPTY_DATASET, "dataset is empty")
+
+    # на других метках модель обучится, но предсказывать по ней будет нечем
+    labels = sorted(int(value) for value in df[TARGET].dropna().unique())
+    if labels != [0, 1]:
+        raise ServiceError(
+            422,
+            INVALID_TARGET,
+            f"target '{TARGET}' must contain exactly labels 0 and 1",
+            {"found_labels": labels},
+        )
 
     config = config or TrainingConfigChurn()
     try:
         pipeline, metrics, applied = train_churn_model(
             df, config.model_type, config.hyperparameters
         )
-    except InvalidTrainingConfig as error:
-        raise HTTPException(status_code=422, detail=str(error))
+    except InvalidTrainingConfig:
+        # обрабатывается глобально: дело в конфигурации, а не в данных
+        raise
+    except (KeyError, ValueError) as error:
+        raise ServiceError(
+            422,
+            DATA_PREPARATION_FAILED,
+            f"could not prepare dataset for training: {error}",
+        )
 
     artifact = ModelArtifact(
         pipeline=pipeline,
