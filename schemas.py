@@ -107,6 +107,29 @@ class ModelStatus(BaseModel):
     metrics: TrainMetrics | None
 
 
+class HealthStatus(BaseModel):
+    status: str
+    model_available: bool
+    dataset_available: bool
+    # датасет читается по первому запросу, поэтому наличие файла и загрузка в память различаются
+    dataset_loaded: bool
+    n_rows: int | None
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "status": "ok",
+                    "model_available": True,
+                    "dataset_available": True,
+                    "dataset_loaded": True,
+                    "n_rows": 2000,
+                }
+            ]
+        }
+    }
+
+
 class FeatureSchema(BaseModel):
     name: str
     type: str

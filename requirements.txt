@@ -1,5 +1,9 @@
-fastapi
-uvicorn[standard]
-pandas
-scikit-learn
-joblib
+# версии зафиксированы: образ должен собираться тем же набором, на котором прогнаны тесты,
+# иначе артефакт модели из тома может не загрузиться другой версией scikit-learn
+fastapi==0.143.0
+# starlette приходит через fastapi диапазоном, поэтому фиксируем и её
+starlette==1.9.0
+uvicorn[standard]==0.54.0
+pandas==3.0.6
+scikit-learn==1.9.1
+joblib==1.6.0

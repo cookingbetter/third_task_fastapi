@@ -1,5 +1,6 @@
 import logging
 import math
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated
@@ -12,7 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from starlette.exceptions import HTTPException
 
-from dataset import get_dataset
+from dataset import dataset_state, get_dataset
 from errors import (
     DATA_PREPARATION_FAILED,
     DATASET_NOT_FOUND,
@@ -32,6 +33,7 @@ from errors import (
     error_payload,
 )
 from history import HISTORY_LIMIT, append_record, load_history
+from logging_config import configure_logging
 from model import (
     MODEL_TYPES,
     InvalidTrainingConfig,
@@ -63,6 +65,7 @@ from schemas import (
     ErrorResponse,
     FeatureSchema,
     FeatureVectorChurn,
+    HealthStatus,
     MetricsHistoryResponse,
     ModelSchemaChurn,
     ModelStatus,
@@ -78,6 +81,17 @@ from schemas import (
 logger = logging.getLogger(__name__)
 
 JSON_TYPES = {float: "number", int: "integer", str: "string"}
+
+# ошибка в самом запросе — рядовое событие, а неготовность сервиса стоит заметить
+CLIENT_ERROR_CODES = {
+    VALIDATION_ERROR,
+    EMPTY_PAYLOAD,
+    NON_FINITE_VALUE,
+    INVALID_TRAINING_CONFIG,
+    STATUS_CODES[400],
+    STATUS_CODES[404],
+    STATUS_CODES[405],
+}
 
 SINGLE_CLIENT_EXAMPLE = {
     "monthly_fee": 9.99,
@@ -334,10 +348,20 @@ TRAIN_ERROR_RESPONSES = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging()
+    logger.info("churn service starting")
     artifact = load_churn_model()
     if artifact is not None:
         set_artifact(artifact)
+        logger.info(
+            "model restored from disk: model_type=%s trained_at=%s",
+            getattr(artifact, "model_type", None),
+            artifact.trained_at,
+        )
+    else:
+        logger.info("no stored model found, service starts untrained")
     yield
+    logger.info("churn service stopped")
 
 
 app = FastAPI(title="ML Churn Service", lifespan=lifespan)
@@ -353,8 +377,23 @@ def json_safe(value):
     return value
 
 
+def log_error(request: Request, status_code: int, code: str, message: str) -> None:
+    # клиентские ошибки идут как info, отказы сервиса как warning
+    level = logging.INFO if status_code < 500 and code in CLIENT_ERROR_CODES else logging.WARNING
+    logger.log(
+        level,
+        "%s %s -> %s %s: %s",
+        request.method,
+        request.url.path,
+        status_code,
+        code,
+        message,
+    )
+
+
 @app.exception_handler(ServiceError)
 async def service_error_handler(request: Request, exc: ServiceError):
+    log_error(request, exc.status_code, exc.code, exc.message)
     return JSONResponse(
         status_code=exc.status_code,
         content=error_payload(exc.code, exc.message, exc.details),
@@ -363,6 +402,7 @@ async def service_error_handler(request: Request, exc: ServiceError):
 
 @app.exception_handler(InvalidTrainingConfig)
 async def training_config_error_handler(request: Request, exc: InvalidTrainingConfig):
+    log_error(request, 422, INVALID_TRAINING_CONFIG, str(exc))
     return JSONResponse(
         status_code=422,
         content=error_payload(INVALID_TRAINING_CONFIG, str(exc)),
@@ -383,6 +423,9 @@ def compact_errors(errors) -> list[dict]:
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
+    log_error(
+        request, 422, VALIDATION_ERROR, f"{len(exc.errors())} validation error(s)"
+    )
     return JSONResponse(
         status_code=422,
         content=error_payload(
@@ -396,11 +439,11 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 @app.exception_handler(HTTPException)
 async def http_error_handler(request: Request, exc: HTTPException):
     # сюда попадает то, что поднимает сам fastapi: неизвестный путь, чужой метод
+    code = STATUS_CODES.get(exc.status_code, "http_error")
+    log_error(request, exc.status_code, code, str(exc.detail))
     return JSONResponse(
         status_code=exc.status_code,
-        content=error_payload(
-            STATUS_CODES.get(exc.status_code, "http_error"), str(exc.detail)
-        ),
+        content=error_payload(code, str(exc.detail)),
         headers=exc.headers,
     )
 
@@ -474,6 +517,19 @@ def ensure_finite(objects: list[FeatureVectorChurn]) -> None:
 @app.get("/")
 def read_root():
     return {"message": "ml churn service is running"}
+
+
+@app.get("/health", response_model=HealthStatus)
+def health():
+    # всегда 200: необученная модель — рабочее состояние, а не отказ сервиса
+    state = dataset_state()
+    return HealthStatus(
+        status="ok",
+        model_available=get_artifact() is not None,
+        dataset_available=state["available"],
+        dataset_loaded=state["loaded"],
+        n_rows=state["n_rows"],
+    )
 
 
 @app.post(
@@ -551,6 +607,11 @@ def predict(
         )
         for cls, row in zip(classes, proba)
     ]
+    logger.info(
+        "prediction served: n_objects=%s churn_predicted=%s",
+        len(predictions),
+        sum(item.churn for item in predictions),
+    )
     return PredictionResponseChurn(n_objects=len(predictions), predictions=predictions)
 
 
@@ -646,6 +707,13 @@ def model_train(
         )
 
     config = config or TrainingConfigChurn()
+    logger.info(
+        "training started: model_type=%s hyperparameters=%s rows=%s",
+        config.model_type,
+        config.hyperparameters,
+        len(df),
+    )
+    started = time.perf_counter()
     try:
         pipeline, metrics, applied = train_churn_model(
             df, config.model_type, config.hyperparameters
@@ -669,6 +737,17 @@ def model_train(
     )
     save_churn_model(artifact)
     set_artifact(artifact)
+    logger.info(
+        "training finished in %.2fs: model_type=%s n_train=%s n_test=%s "
+        "accuracy=%s f1=%s roc_auc=%s",
+        time.perf_counter() - started,
+        config.model_type,
+        metrics["n_train"],
+        metrics["n_test"],
+        metrics["accuracy"],
+        metrics["f1"],
+        metrics["roc_auc"],
+    )
 
     try:
         append_record(

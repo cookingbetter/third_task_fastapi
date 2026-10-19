@@ -1,6 +1,7 @@
 import pytest
 from conftest import LOYAL_CLIENT, RISKY_CLIENT
 
+from dataset import dataset_state, get_dataset
 from preprocessing import (
     CATEGORICAL_FEATURES,
     FEATURE_ORDER,
@@ -34,6 +35,40 @@ def test_status_reports_untrained_before_training(client):
         "hyperparameters": None,
         "metrics": None,
     }
+
+
+def test_health_reports_untrained_service(client):
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["model_available"] is False
+    assert body["dataset_available"] is True
+
+
+def test_health_reports_trained_model(subset_client):
+    subset_client.post("/model/train")
+
+    assert subset_client.get("/health").json()["model_available"] is True
+
+
+def test_health_tracks_dataset_loading(client):
+    # кеш датасета глобален, поэтому состояние задаём явно, а не надеемся на порядок тестов
+    get_dataset.cache_clear()
+    assert client.get("/health").json()["dataset_loaded"] is False
+
+    client.get("/dataset/preview?n=1")
+
+    body = client.get("/health").json()
+    assert body["dataset_loaded"] is True
+    assert body["n_rows"] == 2000
+
+
+def test_dataset_state_without_file(tmp_path):
+    state = dataset_state(tmp_path / "missing.csv")
+
+    assert state["available"] is False
 
 
 def test_dataset_info_describes_subset(subset_client, real_subset):
