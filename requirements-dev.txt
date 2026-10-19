@@ -1,2 +1,4 @@
 pytest
+# starlette 1.8+ импортирует httpx2, на более старых версиях TestClient требует httpx
+starlette>=1.8
 httpx2
