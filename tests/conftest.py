@@ -2,11 +2,11 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-import history
-import main
-import model
-from dataset import load_dataset
-from preprocessing import TARGET
+from app.api import deps
+from app.main import app
+from app.ml import history, model
+from app.ml.dataset import load_dataset
+from app.ml.preprocessing import TARGET
 
 LOYAL_CLIENT = {
     "monthly_fee": 9.99,
@@ -35,26 +35,15 @@ RISKY_CLIENT = {
 
 @pytest.fixture(autouse=True)
 def isolated_storage(tmp_path, monkeypatch):
-    # пути в save_churn_model и append_record зафиксированы значениями по умолчанию
-    # ещё при определении функций, поэтому подменяем сами функции в main
+    # подменяем сами пути, а не функции: тогда изоляция не зависит от того,
+    # каким способом роутер вызывает сохранение модели и записи истории
     paths = {
         "model": tmp_path / "churn_model.joblib",
         "history": tmp_path / "training_history.json",
     }
     monkeypatch.setattr(model, "_artifact", None)
-    monkeypatch.setattr(
-        main,
-        "save_churn_model",
-        lambda artifact: model.save_churn_model(artifact, paths["model"]),
-    )
-    monkeypatch.setattr(
-        main,
-        "append_record",
-        lambda record: history.append_record(record, paths["history"]),
-    )
-    monkeypatch.setattr(
-        main, "load_history", lambda: history.load_history(paths["history"])
-    )
+    monkeypatch.setattr(model, "MODEL_PATH", paths["model"])
+    monkeypatch.setattr(history, "HISTORY_PATH", paths["history"])
     return paths
 
 
@@ -62,17 +51,17 @@ def isolated_storage(tmp_path, monkeypatch):
 def client():
     # без контекстного менеджера lifespan не запускается,
     # поэтому модель с диска не подхватывается и тесты видят необученный сервис
-    return TestClient(main.app)
+    return TestClient(app)
 
 
 @pytest.fixture
 def with_dataset():
     def override(df: pd.DataFrame) -> pd.DataFrame:
-        main.app.dependency_overrides[main.dataset_dependency] = lambda: df
+        app.dependency_overrides[deps.dataset_dependency] = lambda: df
         return df
 
     yield override
-    main.app.dependency_overrides.clear()
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture(scope="session")

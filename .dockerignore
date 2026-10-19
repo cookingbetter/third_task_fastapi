@@ -1,6 +1,7 @@
 .venv/
-__pycache__/
-*.pyc
+# пакеты вложенные, поэтому шаблоны рекурсивные: один уровень Docker не раскрывает
+**/__pycache__
+**/*.pyc
 .pytest_cache/
 .git/
 .gitignore

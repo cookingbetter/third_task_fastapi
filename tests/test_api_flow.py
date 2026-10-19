@@ -1,8 +1,8 @@
 import pytest
 from conftest import LOYAL_CLIENT, RISKY_CLIENT
 
-from dataset import dataset_state, get_dataset
-from preprocessing import (
+from app.ml.dataset import dataset_state, get_dataset
+from app.ml.preprocessing import (
     CATEGORICAL_FEATURES,
     FEATURE_ORDER,
     NUMERIC_FEATURES,
@@ -167,9 +167,12 @@ def test_prediction_label_matches_the_larger_probability(client, with_dataset, s
 
 
 def test_metrics_limit_restricts_returned_records(subset_client):
-    subset_client.post("/model/train", json={"model_type": "logreg", "hyperparameters": {"C": 0.5}})
-    subset_client.post("/model/train", json={"model_type": "logreg", "hyperparameters": {"C": 0.6}})
-    subset_client.post("/model/train", json={"model_type": "random_forest", "hyperparameters": {}})
+    for config in (
+        {"model_type": "logreg", "hyperparameters": {"C": 0.5}},
+        {"model_type": "logreg", "hyperparameters": {"C": 0.6}},
+        {"model_type": "random_forest", "hyperparameters": {}},
+    ):
+        subset_client.post("/model/train", json=config)
 
     body = subset_client.get("/model/metrics?limit=2").json()
 
@@ -183,7 +186,8 @@ def test_metrics_limit_restricts_returned_records(subset_client):
 def test_model_schema_describes_trained_categories(subset_client):
     subset_client.post("/model/train")
 
-    features = {item["name"]: item for item in subset_client.get("/model/schema").json()["features"]}
+    schema = subset_client.get("/model/schema").json()
+    features = {item["name"]: item for item in schema["features"]}
 
     for name in CATEGORICAL_FEATURES:
         assert features[name]["kind"] == "categorical"
@@ -223,7 +227,7 @@ def test_training_the_same_data_twice_gives_the_same_metrics(subset_client):
 
 
 def test_prediction_survives_model_reload(subset_client, isolated_storage):
-    from model import load_churn_model, set_artifact
+    from app.ml.model import load_churn_model, set_artifact
 
     subset_client.post("/model/train")
     before = subset_client.post("/predict", json=RISKY_CLIENT).json()

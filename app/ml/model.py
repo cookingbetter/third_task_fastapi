@@ -14,26 +14,21 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from preprocessing import (
+from app.core.config import MODEL_PATH, RANDOM_STATE
+from app.core.errors import InvalidTrainingConfig
+from app.ml.preprocessing import (
     CATEGORICAL_FEATURES,
     NUMERIC_FEATURES,
-    RANDOM_STATE,
     prepare_data,
     split_train_test,
 )
 
 logger = logging.getLogger(__name__)
 
-MODEL_PATH = Path(__file__).parent / "models" / "churn_model.joblib"
-
 MODEL_TYPES = {
     "logreg": (LogisticRegression, {"max_iter": 1000, "random_state": RANDOM_STATE}),
     "random_forest": (RandomForestClassifier, {"random_state": RANDOM_STATE}),
 }
-
-
-class InvalidTrainingConfig(ValueError):
-    pass
 
 
 @dataclass
@@ -154,12 +149,16 @@ def trained_categories(pipeline: Pipeline) -> dict[str, list[str]]:
         return {}
 
 
-def save_churn_model(artifact: ModelArtifact, path: Path = MODEL_PATH) -> None:
+def save_churn_model(artifact: ModelArtifact, path: Path | None = None) -> None:
+    # путь читается при вызове, а не фиксируется значением по умолчанию:
+    # иначе подменить его в тестах можно было бы только заменой самой функции
+    path = path or MODEL_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(artifact, path)
 
 
-def load_churn_model(path: Path = MODEL_PATH) -> ModelArtifact | None:
+def load_churn_model(path: Path | None = None) -> ModelArtifact | None:
+    path = path or MODEL_PATH
     if not path.exists():
         return None
     try:

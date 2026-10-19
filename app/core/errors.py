@@ -22,6 +22,10 @@ STATUS_CODES = {
 }
 
 
+class InvalidTrainingConfig(ValueError):
+    """Тип модели или гиперпараметры, с которыми обучение невозможно."""
+
+
 class ServiceError(Exception):
     def __init__(
         self,

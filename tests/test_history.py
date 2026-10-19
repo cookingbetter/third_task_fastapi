@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from history import HISTORY_LIMIT, append_record, load_history
+from app.ml.history import HISTORY_LIMIT, append_record, load_history
 
 
 @pytest.fixture

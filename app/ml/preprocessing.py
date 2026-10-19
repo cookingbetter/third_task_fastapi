@@ -1,6 +1,8 @@
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
+from app.core.config import RANDOM_STATE, TEST_SIZE
+
 NUMERIC_FEATURES = [
     "monthly_fee",
     "usage_hours",
@@ -12,9 +14,6 @@ NUMERIC_FEATURES = [
 CATEGORICAL_FEATURES = ["region", "device_type", "payment_method"]
 FEATURE_ORDER = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 TARGET = "churn"
-
-TEST_SIZE = 0.2
-RANDOM_STATE = 42
 
 
 def handle_missing(df: pd.DataFrame) -> pd.DataFrame:

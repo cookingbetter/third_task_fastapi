@@ -5,8 +5,8 @@ import pytest
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 
-from model import (
-    InvalidTrainingConfig,
+from app.core.errors import InvalidTrainingConfig
+from app.ml.model import (
     ModelArtifact,
     build_classifier,
     load_churn_model,
@@ -14,7 +14,7 @@ from model import (
     train_churn_model,
     trained_categories,
 )
-from preprocessing import CATEGORICAL_FEATURES, FEATURE_ORDER, features_to_frame
+from app.ml.preprocessing import CATEGORICAL_FEATURES, FEATURE_ORDER, features_to_frame
 
 LOYAL_FEATURES = {
     "monthly_fee": 10.0,
@@ -136,6 +136,6 @@ def test_trained_categories_lists_values_per_feature(synthetic_df):
 
 
 def test_trained_categories_tolerates_untrained_pipeline():
-    from model import build_pipeline
+    from app.ml.model import build_pipeline
 
     assert trained_categories(build_pipeline()) == {}

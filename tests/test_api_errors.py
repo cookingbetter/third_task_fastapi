@@ -9,8 +9,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-import main
-from errors import (
+from app.api import deps
+from app.core.errors import (
     DATA_PREPARATION_FAILED,
     DATASET_NOT_FOUND,
     EMPTY_DATASET,
@@ -23,8 +23,8 @@ from errors import (
     NON_FINITE_VALUE,
     VALIDATION_ERROR,
 )
-from model import ModelArtifact, build_pipeline, set_artifact
-from preprocessing import FEATURE_ORDER, NUMERIC_FEATURES, TARGET, prepare_data
+from app.ml.model import ModelArtifact, build_pipeline, set_artifact
+from app.ml.preprocessing import FEATURE_ORDER, NUMERIC_FEATURES, TARGET, prepare_data
 
 JSON_HEADERS = {"content-type": "application/json"}
 
@@ -181,7 +181,7 @@ def test_train_without_dataset_file(client, monkeypatch):
     def missing_file():
         raise FileNotFoundError("data/churn_dataset.csv")
 
-    monkeypatch.setattr(main, "get_dataset", missing_file)
+    monkeypatch.setattr(deps, "get_dataset", missing_file)
 
     assert_error(client.post("/model/train"), 404, DATASET_NOT_FOUND)
 
@@ -190,7 +190,7 @@ def test_train_with_unreadable_dataset(client, monkeypatch):
     def broken_file():
         raise ValueError("1 validation error for DatasetRowChurn")
 
-    monkeypatch.setattr(main, "get_dataset", broken_file)
+    monkeypatch.setattr(deps, "get_dataset", broken_file)
 
     assert_error(client.post("/model/train"), 422, DATA_PREPARATION_FAILED)
 
@@ -289,4 +289,5 @@ def test_errors_never_leak_tracebacks(trained_client):
     for response in responses:
         text = response.text
         assert "Traceback" not in text
-        assert "main.py" not in text
+        assert "app/" not in text
+        assert ".py" not in text

@@ -4,13 +4,15 @@ import logging
 from contextlib import contextmanager
 from pathlib import Path
 
+from app.core.config import HISTORY_LIMIT, HISTORY_PATH
+
 logger = logging.getLogger(__name__)
 
-HISTORY_PATH = Path(__file__).parent / "models" / "training_history.json"
-HISTORY_LIMIT = 100
 
-
-def load_history(path: Path = HISTORY_PATH) -> list[dict]:
+def load_history(path: Path | None = None) -> list[dict]:
+    # путь читается при вызове, а не фиксируется значением по умолчанию:
+    # иначе подменить его в тестах можно было бы только заменой самой функции
+    path = path or HISTORY_PATH
     if not path.exists():
         return []
     try:
@@ -35,7 +37,8 @@ def locked(path: Path):
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
-def append_record(record: dict, path: Path = HISTORY_PATH) -> None:
+def append_record(record: dict, path: Path | None = None) -> None:
+    path = path or HISTORY_PATH
     # без блокировки одновременные обучения читают одно состояние
     # и затирают записи друг друга
     with locked(path):

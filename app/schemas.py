@@ -210,7 +210,7 @@ class MetricsHistoryResponse(BaseModel):
                         "metrics": {
                             "accuracy": 0.795,
                             "f1": 0.1458,
-                            "roc_auc": 0.6421,
+                            "roc_auc": 0.6148,
                         },
                         "n_train": 1600,
                         "n_test": 400,
@@ -228,7 +228,7 @@ class MetricsHistoryResponse(BaseModel):
                             "metrics": {
                                 "accuracy": 0.795,
                                 "f1": 0.1458,
-                                "roc_auc": 0.6421,
+                                "roc_auc": 0.6148,
                             },
                             "n_train": 1600,
                             "n_test": 400,
@@ -241,9 +241,9 @@ class MetricsHistoryResponse(BaseModel):
                                 "random_state": 42,
                             },
                             "metrics": {
-                                "accuracy": 0.7875,
-                                "f1": 0.0449,
-                                "roc_auc": 0.6189,
+                            "accuracy": 0.7875,
+                            "f1": 0.0449,
+                            "roc_auc": 0.6091,
                             },
                             "n_train": 1600,
                             "n_test": 400,
